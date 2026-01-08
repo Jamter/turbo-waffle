@@ -1,0 +1,780 @@
+-- Plugin Information
+PluginInfo = {
+    Name = "HRAV Tools~" .. "Audio Ducker",
+    Version = "1.3",
+    Id = "f8f0dd0f-9267-4853-a35c-b5f0515a1ffe",
+    Description = [[]], -- Empty description
+    Author = "Jamie Hunter",
+    ShowDebug = true -- Flag to enable debugging features (if implemented)
+}
+
+------------------------------- Global Variables ------------------------------
+local colours = {
+    White = { 255, 255, 255 },
+    Black = { 0, 0, 0 },
+    DarkGrey = { 50, 50, 50 },
+    LightGrey = { 220, 220, 220 },
+    Blue = { 87, 87, 200 },
+    Red = { 100, 0, 0 },
+    Green = { 0, 100, 0 },
+    Yellow = { 255, 245, 72 },
+    Transparent = { 0, 0, 0, 0 }
+}
+
+ENABLE_CODE_PIN = true -- Enables or disables the code pin feature
+
+--------------------------------- Properties ----------------------------------
+-- This function defines the properties that can be configured for the plugin.
+function GetProperties()
+    local props = {
+        {
+            Name = "Channel Count",
+            Type = "integer",
+            Min = 1,
+            Max = 256,
+            Value = 1
+        },
+    }
+
+    return props
+end
+
+-- This function is intended to rectify or validate the properties.
+-- In this case, it simply returns the provided properties without modification.
+function RectifyProperties(props)
+    return props
+end
+
+-- This function returns a user-friendly name for the plugin, including its version.
+function GetPrettyName(props)
+    return PluginInfo["Name"] .. " v" .. PluginInfo["Version"]
+end
+
+-- This function returns the main color of the plugin.
+-- It currently uses a function 'ConvertColor' to convert a hex color code.
+function GetColor(props)
+    return ConvertColor("#0000f0") -- Converts the hex color code to a color table
+end
+
+---------------------------------- Controls -----------------------------------
+-- This function defines the user interface controls for the plugin.
+function GetControls(props)
+    local ctls = {
+        -- Button to enable/disable the audio ducker
+        {
+            Name = "enable_ducker",
+            ControlType = "Button",
+            ButtonType = "Toggle", -- Makes the button act as a toggle switch
+            Count = 1, -- Number of instances of this control
+            PinStyle = "Input", -- Indicates that this control receives input
+            UserPin = true -- Indicates that this control should have a user-facing pin
+        },
+        -- Knob to control the threshold for the reference audio
+        {
+            Name = "reference_threshold",
+            ControlType = "Knob",
+            ControlUnit = "dB", -- Unit of measurement for the knob
+            Min = -100,
+            Max = 20,
+            Count = 1,
+            PinStyle = "Input",
+            UserPin = true
+        },
+        -- Knob to control the amount of attenuation applied during ducking
+        {
+            Name = "duck_attenuation",
+            ControlType = "Knob",
+            ControlUnit = "dB",
+            Min = -100,
+            Max = 0,
+            Count = 1,
+            PinStyle = "Input",
+            UserPin = true
+        },
+        -- Knob to control the hold time after the reference signal falls below the threshold
+        {
+            Name = "hold_time",
+            ControlType = "Knob",
+            ControlUnit = "Integer",
+            Min = 0,
+            Max = 10,
+            Count = 1, -- if > 0 this will make the control an array
+            PinStyle = "Input",
+            UserPin = true
+        },
+        -- Knob to control the attack time of the ducking effect
+        {
+            Name = "attack_time",
+            ControlType = "Knob",
+            ControlUnit = "Integer",
+            Min = 0,
+            Max = 10,
+            Count = 1, -- if > 0 this will make the control an array
+            PinStyle = "Input",
+            UserPin = true
+        },
+        -- Knob to control the release time of the ducking effect
+        {
+            Name = "release_time",
+            ControlType = "Knob",
+            ControlUnit = "Integer",
+            Min = 0,
+            Max = 10,
+            Count = 1, -- if > 0 this will make the control an array
+            PinStyle = "Input",
+            UserPin = true
+        },
+        -- Indicator to show if the ducking is currently active
+        {
+            Name = "ducking_active",
+            ControlType = "Indicator",
+            IndicatorType = "Led", -- Uses a LED style indicator
+            Count = 1,
+            PinStyle = "Output", -- Indicates that this control provides output
+            UserPin = true
+        },
+        -- Indicator to show if the reference signal is currently active (above threshold)
+        {
+            Name = "signal_active",
+            ControlType = "Indicator",
+            IndicatorType = "Led",
+            Count = 1,
+            PinStyle = "Output",
+            UserPin = true
+        },
+        -- Button to manually hold the ducker in the "on" state
+        {
+            Name = "hold_ducker",
+            ControlType = "Button",
+            ButtonType = "Toggle",
+            Count = 1,
+            PinStyle = "Input",
+            UserPin = true
+        },
+    }
+
+    -- Conditionally add a text control for a code pin if ENABLE_CODE_PIN is true
+    if ENABLE_CODE_PIN then
+        table.insert(ctls, {
+            Name = "code",
+            ControlType = "Text",
+            Count = 1,
+            PinStyle = "Input",
+            UserPin = true
+        })
+    end
+
+    return ctls
+end
+
+------------------------------- Control Layout --------------------------------
+-- This function defines how the controls are arranged in the plugin's UI.
+function GetControlLayout(props)
+    -- Uncomment the next line if you are using multiple pages
+    --local currentPage = props["page_index"].Value
+
+    local layout = { }
+
+    -- Layout for the code pin control (if enabled)
+    if ENABLE_CODE_PIN then
+        layout["code"] =
+        {
+            PrettyName = "Code",
+            Style = "None" -- No specific visual style for this control
+        }
+    end
+
+    local graphics = { } -- Table to hold graphical elements for the UI
+    local sourcesCoords = { x = 0, y = 0 } -- Coordinates (not directly used in this layout)
+    local destsCoords = { x = 0, y = 0 }   -- Coordinates (not directly used in this layout)
+    local enableCoords = { x = 0, y = 0 }  -- Coordinates (not directly used in this layout)
+    local storedCoords = { x = 0, y = 0 }  -- Coordinates (not directly used in this layout)
+    local cornerRadius = 3
+    local mainOffset = 5
+    local groupBoxOffset = 15
+    local headerTextSize = { 260, 23 }
+    local textSize = { 115, 20 }
+    local comboSize = { 104, 20 }
+    local btnSize = { 70, 35 }
+    local fontSize = 12
+    local multiplier = 8
+    local loginMultiplier = 3
+    local advancedMultiplier = 0
+    local pipeSize = { 10, 20 }
+    local headingSize1 = { 75, 20 }
+    local headingSize2 = { 46, 20 }
+    local headingSize3 = { 100, 20 }
+    local numberDigits = 10
+
+    -- Helper function for incrementing the Y coordinate (not directly used in this layout)
+    local function yIncrement(addition)
+        sourcesCoords.y = sourcesCoords.y + addition
+        storedCoords.y  = sourcesCoords.y
+    end
+
+    -- Main background group box
+    table.insert(
+        graphics,
+        {
+            Type = "GroupBox",
+            Text = "",
+            Fill = colours.White,
+            CornerRadius = cornerRadius,
+            StrokeWidth = 0,
+            Position = { 0, 0 },
+            Size = {446,230}
+        }
+    )
+
+    -- Plugin title text
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Auto Audio Ducker v"..PluginInfo["Version"],
+            Font = "Roboto",
+            FontSize = fontSize + 6,
+            FontStyle = "Bold",
+            HTextAlign = "Left",
+            Color = colours.Black,
+            Position = { 10, 6 },
+            Size = {260,23}
+        }
+    )
+
+    -- Main content group box
+    table.insert(
+        graphics,
+        {
+            Type = "GroupBox",
+            Text = "",
+            Fill = colours.LightGrey,
+            CornerRadius = cornerRadius,
+            StrokeColor = colours.DarkGrey,
+            StrokeWidth = 0,
+            Position = { 10,39 },
+            Size = {426,181}
+        }
+    )
+
+    -- "Enable Ducker" label
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Enable Ducker",
+            Font = "Roboto",
+            FontSize = 12,
+            FontStyle = "Bold",
+            HTextAlign = "Left",
+            Color = colours.Black,
+            Position = { 17,46 },
+            Size = {96,23}
+        }
+    )
+
+    -- "Reference Audio" label
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Reference Audio",
+            Font = "Roboto",
+            FontSize = 12,
+            FontStyle = "Bold",
+            HTextAlign = "Left",
+            Color = colours.Black,
+            Position = { 17,109 },
+            Size = {114,23}
+        }
+    )
+
+    -- "Ducking Controls" label
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Ducking Controls",
+            Font = "Roboto",
+            FontSize = 12,
+            FontStyle = "Bold",
+            HTextAlign = "Left",
+            Color = colours.Black,
+            Position = { 235,46},
+            Size = {114,23}
+        }
+    )
+
+    -- Group box for Reference Audio controls
+    table.insert(
+        graphics,
+        {
+            Type = "GroupBox",
+            Text = "",
+            Fill = colours.Transparent,
+            CornerRadius = cornerRadius,
+            StrokeColor = colours.DarkGrey,
+            StrokeWidth = 1,
+            Position = { 17,132 },
+            Size = {192,78}
+        }
+    )
+
+    -- Group box for Ducking Controls
+    table.insert(
+        graphics,
+        {
+            Type = "GroupBox",
+            Text = "",
+            Fill = colours.Transparent,
+            CornerRadius = cornerRadius,
+            StrokeColor = colours.DarkGrey,
+            StrokeWidth = 1,
+            Position = { 235,75 },
+            Size = {192,135}
+        }
+    )
+
+    -- "Threshold" label for the reference audio knob
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Threshold",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 18,132 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Hold" label for the hold time knob
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Hold",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 81,132 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Signal" label for the signal active indicator
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Signal",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 145,132 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Ducked\nLevel" label for the duck attenuation knob
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Ducked\nLevel",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 235,82 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Attack\nTime" label for the attack time knob
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Attack\nTime",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 299,82 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Release\nTime" label for the release time knob
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Release\nTime",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 363,82 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Force On" label for the hold ducker button
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Force On",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 263,150 },
+            Size = {64,32}
+        }
+    )
+
+    -- "Active" label for the ducking active indicator
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Active",
+            Font = "Roboto",
+            FontSize = 11,
+            FontStyle = "Regular",
+            HTextAlign = "Center",
+            Color = colours.Black,
+            Position = { 327,150 },
+            Size = {64,32}
+        }
+    )
+
+    -- Layout for the enable ducker button
+    layout["enable_ducker"] = {
+        PrettyName = "Enable",
+        Style = "Button",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.White,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 17,69},
+        Size = { 81,33 }
+    }
+
+    -- Layout for the reference threshold knob
+    layout["reference_threshold"] = {
+        PrettyName = "Reference Audio~Threshold",
+        Style = "Knob",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.Blue,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 32,164},
+        Size = { 36,36 }
+    }
+
+    -- Layout for the hold time knob
+    layout["hold_time"] = {
+        PrettyName = "Reference Audio~Hold Time",
+        Style = "Knob",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.Yellow,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 95,164},
+        Size = { 36,36 }
+    }
+
+    -- Layout for the signal active indicator
+    layout["signal_active"] = {
+        PrettyName = "Reference Audio~Signal",
+        Style = "LED",
+        StrokeWidth = 0,
+        UnlinkOffColor = true,
+        Color = colours.Green,
+        OffColor = colours.DarkGrey,
+        ButtonVisualStyle = "Flat",
+        CornerRadius = 3,
+        Position = { 162,164 },
+        Size = { 30,30 },
+    }
+
+    -- Layout for the duck attenuation knob
+    layout["duck_attenuation"] = {
+        PrettyName = "Ducking Controls~Ducked Level",
+        Style = "Knob",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.Blue,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 249,114},
+        Size = { 36,36 }
+    }
+
+    -- Layout for the attack time knob
+    layout["attack_time"] = {
+        PrettyName = "Ducking Controls~Attack Time",
+        Style = "Knob",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.Yellow,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 313,114},
+        Size = { 36,36 }
+    }
+
+    -- Layout for the release time knob
+    layout["release_time"] = {
+        PrettyName = "Ducking Controls~Release Time",
+        Style = "Knob",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.Yellow,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 377,114},
+        Size = { 36,36 }
+    }
+
+    -- Layout for the hold ducker button
+    layout["hold_ducker"] = {
+        PrettyName = "Ducking Controls~Hold Ducker",
+        Style = "Button",
+        StrokeWidth = 1,
+        CornerRadius = cornerRadius,
+        --UnlinkOffColor = true,
+        Color = colours.White,
+        --OffColor = colours.Black,
+        ButtonVisualStyle = "Flat",
+        Position = { 277,178},
+        Size = { 36,16 }
+    }
+
+    -- Layout for the ducking active indicator
+    layout["ducking_active"] = {
+        PrettyName = "Ducking Controls~Ducking Active",
+        Style = "LED",
+        StrokeWidth = 0,
+        UnlinkOffColor = true,
+        Color = colours.Green,
+        OffColor = colours.DarkGrey,
+        ButtonVisualStyle = "Flat",
+        CornerRadius = 3,
+        Position = { 349,176 },
+        Size = { 20,20 },
+    }
+
+
+    return layout, graphics
+end
+
+---------------------------- Other Plugin Functions ---------------------------
+
+-- This function defines the input and output audio pins for the plugin.
+function GetPins(props)
+    local pins = {}
+
+    -- Create input and output pins based on the configured channel count
+    for i=1, props["Channel Count"].Value do
+        table.insert(pins,
+            { Name = "Input "..i, Direction = "input" }
+        )
+
+        table.insert(pins,
+            { Name = "Output "..i, Direction = "output"}
+        )
+    end
+
+    -- Add an input pin for the ducker reference audio
+    table.insert(pins,
+        { Name = "Ducker Reference", Direction = "input"}
+    )
+
+
+    return pins
+end
+
+-- This function defines the internal DSP components used by the plugin.
+function GetComponents(props)
+    local rampType = 0
+    -- Determine the ramp component's multi-channel type based on the channel count
+    if props["Channel Count"].Value == 1 then
+        rampType = 1 -- Mono
+    else
+        rampType = 3 -- Multi-channel interleaved
+    end
+
+    local components = {
+        -- Ramp component for controlling the gain (ducking effect)
+        {
+            Name = "_ramp",
+            Type = "ramp",
+            Properties = {
+                ["multi_channel_type"] = rampType,
+                ["multi_channel_count"] = props["Channel Count"].Value,
+            }
+        },
+        -- Signal presence detector for the ducker reference audio
+        {
+            Name = "_signal",
+            Type = "signal_presence",
+            Properties = {
+                ["multi_channel_type"] = 1, -- Mono
+                ["multi_channel_count"] = 8, -- Check signal presence across 8 samples?
+            }
+        }
+    }
+
+    return components
+end
+
+-- This function defines how the input and output pins are connected to the internal components.
+function GetWiring(props)
+    local wiring = { }
+
+    -- Connect input and output pins to the ramp component based on channel count
+    if props["Channel Count"].Value == 1 then
+        table.insert(wiring, {"Input 1", "_ramp Input"})
+        table.insert(wiring, {"Output 1", "_ramp Output"})
+    else
+        for i=1, props["Channel Count"].Value do
+            table.insert(wiring, {"Input "..i, "_ramp Input Channel "..i})
+            table.insert(wiring, {"Output "..i, "_ramp Output Channel "..i})
+        end
+    end
+
+    -- Connect the ducker reference input to the signal presence detector
+    table.insert(wiring, {"Ducker Reference", "_signal Input"})
+
+    return wiring
+end
+
+------------------------------ Local Functions --------------------------------
+-- This function converts a single hexadecimal character to its decimal equivalent.
+local function hexCharToDec(char)
+    local byte = string.byte(char)
+    if byte >= 48 and byte <= 57 then -- '0' to '9'
+        return byte - 48
+    elseif byte >= 65 and byte <= 70 then -- 'A' to 'F'
+        return byte - 55
+    elseif byte >= 97 and byte <= 102 then -- 'a' to 'f'
+        return byte - 87
+    else
+        return 0 -- Invalid character
+    end
+end
+
+-- This function converts a two-character hexadecimal string to its decimal equivalent.
+function HEXtoDEC(hex)
+    hex = string.upper(hex)
+    local b1 = hexCharToDec(string.sub(hex, 1, 1))
+    local b2 = hexCharToDec(string.sub(hex, 2, 2))
+
+    return (b1 * 16) + b2
+end
+
+-- This function converts a hex color code (e.g., "#RRGGBB") to a table of RGB values.
+function ConvertColor(c)
+    local t = {}
+    t[1] = HEXtoDEC(string.sub(c,2,3)) -- Red component
+    t[2] = HEXtoDEC(string.sub(c,4,5)) -- Green component
+    t[3] = HEXtoDEC(string.sub(c,6,7)) -- Blue component
+    return t
+end
+
+------------------------------- Runtime Logic ---------------------------------
+
+-- This block of code executes when the plugin is running and the UI controls are available.
+if Controls then
+    -- Control references
+    local enable_ducker = Controls["enable_ducker"]
+    local reference_threshold = Controls["reference_threshold"]
+    local hold_time = Controls["hold_time"]
+    local signal_active = Controls["signal_active"]
+    local duck_attenuation = Controls["duck_attenuation"]
+    local attack_time = Controls["attack_time"]
+    local release_time = Controls["release_time"]
+    local hold_ducker = Controls["hold_ducker"]
+    local ducking_active = Controls["ducking_active"]
+
+    -- DSP signal parameters (accessing properties of the '_signal' component)
+    local signal_hold = _signal["hold.time"]
+    local signal_presence = _signal["signal.presence"]
+    local signal_threshold = _signal["threshold"]
+
+    -- DSP ramp parameters (accessing properties of the '_ramp' component)
+    local ramp_attenuation = _ramp["gain.b"] -- Gain to apply when ducking
+    local ramp_on = _ramp["to.b"]          -- Target gain value (0 for full ducking, 1 for normal)
+    local ramp_attack = _ramp["time.b"]      -- Attack time of the gain change
+    local ramp_release = _ramp["time.a"]    -- Release time of the gain change
+
+    -- Check whether ducking should be enabled based on the enable button, hold button, and signal activity.
+    local function checkDucker()
+        ramp_on.Boolean = enable_ducker.Boolean and (hold_ducker.Boolean or signal_active.Boolean)
+    end
+
+    -- Update the 'ducking_active' indicator based on the state of the ramp.
+    ramp_on.EventHandler = function()
+        ducking_active.Boolean = ramp_on.Boolean
+    end
+
+    -- Shared event handler for all controls that directly affect the ducker's on/off state.
+    local function onDuckerSettingChanged()
+        checkDucker()
+    end
+
+    -- Assign the shared event handler to the enable and hold ducker buttons.
+    enable_ducker.EventHandler = onDuckerSettingChanged
+    hold_ducker.EventHandler = onDuckerSettingChanged
+
+    -- Event handler for the signal presence detector. Updates the 'signal_active' indicator and checks the ducker state.
+    signal_presence.EventHandler = function(ctrl)
+        signal_active.Boolean = ctrl.Boolean
+        checkDucker()
+    end
+
+    -- Mapping table to link UI controls to the corresponding DSP parameters.
+    local controlMapping = {
+        { control = reference_threshold, param = signal_threshold },
+        { control = hold_time, param = signal_hold },
+        { control = duck_attenuation, param = ramp_attenuation },
+        { control = attack_time, param = ramp_attack },
+        { control = release_time, param = ramp_release }
+    }
+
+    -- Iterate through the control mapping and assign event handlers to update DSP parameters when UI controls change.
+    for _, map in ipairs(controlMapping) do
+        map.control.EventHandler = function(ctrl)
+            map.param.Value = ctrl.Value
+        end
+    end
+
+    -- Initial check of the ducker state when the plugin starts.
+    checkDucker()
+
+end --if Controls
