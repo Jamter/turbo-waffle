@@ -8,7 +8,7 @@
     <authors>Jamie Hunter</authors>
     <owners>HRAV</owners>
     <license type="expression">GPL-3.0-or-later</license>
-    <projectUrl>https://github.com/q-sys-community/q-sys-plugin-development</projectUrl>
+    <projectUrl>https://github.com/Jamter/turbo-waffle.git</projectUrl>
     <iconUrl>http://content/images/brand-logo-128px.png</iconUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Audio Ducker</description>
